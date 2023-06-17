@@ -4,6 +4,7 @@
 #include <linux/inet.h>
 #include <linux/version.h>
 #include <linux/moduleparam.h>
+#include <net/netns/generic.h>
 
 #include <net/tcp.h>
 #include <net/sock.h>
@@ -13,10 +14,14 @@ MODULE_AUTHOR("Andrei Savin <andrei.v.savin@gmail.com>");
 MODULE_DESCRIPTION("Stub web server in kernel space");
 MODULE_VERSION("1.0");
 
-static struct work_struct server_accept_conn;
-static struct socket *server_sock;
 static char *port = "2000";
 static char *host = "0.0.0.0";
+unsigned int netns_subsys_id;
+
+struct pernet_server_net {
+	struct work_struct server_accept_conn;
+	struct socket *server_sock;
+};
 
 struct client_work_queue {
 	struct work_struct client_work;
@@ -89,11 +94,15 @@ static int server_tcp_alloc_queue(struct socket *client_sock)
 
 static void server_listener(struct work_struct *w)
 {
+	struct pernet_server_net *pernet;
 	struct socket *client_sock;
 	int ret;
 
+	pernet = container_of(w, struct pernet_server_net, server_accept_conn);
+
 	while (true) {
-		ret = kernel_accept(server_sock, &client_sock, O_NONBLOCK);
+		ret = kernel_accept(pernet->server_sock, &client_sock,
+				    O_NONBLOCK);
 		if (ret < 0) {
 			if (ret != -EAGAIN)
 				pr_warn("failed to accept err=%d\n", ret);
@@ -109,14 +118,17 @@ static void server_listener(struct work_struct *w)
 
 static void server_tcp_listen_data_ready(struct sock *sk)
 {
+	struct pernet_server_net *pernet;
+
 	read_lock_bh(&sk->sk_callback_lock);
+	pernet = sk->sk_user_data;
 
 	if (sk->sk_state == TCP_LISTEN)
-		schedule_work(&server_accept_conn);
+		schedule_work(&pernet->server_accept_conn);
 	read_unlock_bh(&sk->sk_callback_lock);
 }
 
-static int server_init(void)
+static int server_init(struct net *net)
 {
 	int ret;
 	struct sockaddr_storage server_addr;
@@ -125,44 +137,48 @@ static int server_init(void)
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0))
 	int opt = 1;
 #endif
+	struct pernet_server_net *pernet;
 
-	ret = inet_pton_with_scope(&init_net, af, host, port, &server_addr);
+	pernet = net_generic(net, netns_subsys_id);
+
+	ret = inet_pton_with_scope(net, af, host, port, &server_addr);
 	if (ret) {
 		pr_err("malformed ip/port passed: %s:%s\n", host, port);
 		goto err_port;
 	}
 
-	ret = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &server_sock);
+	ret = __sock_create(net, AF_INET, SOCK_STREAM, IPPROTO_TCP,
+			    &pernet->server_sock, 1);
 	if (ret) {
 		pr_err("failed to create a socket\n");
 		goto err_port;
 	}
 
-	ret = kernel_bind(server_sock, (struct sockaddr *)&server_addr,
+	ret = kernel_bind(pernet->server_sock, (struct sockaddr *)&server_addr,
 			  sizeof(server_addr));
 	if (ret) {
 		pr_err("failed to bind port socket\n");
 		goto err_sock;
 	}
 
-	ret = kernel_listen(server_sock, 128);
+	ret = kernel_listen(pernet->server_sock, 128);
 	if (ret) {
 		pr_err("failed to listen on port sock\n");
 		goto err_sock;
 	}
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0))
-	sock_set_reuseaddr(server_sock->sk);
-	tcp_sock_set_nodelay(server_sock->sk);
+	sock_set_reuseaddr(pernet->server_sock->sk);
+	tcp_sock_set_nodelay(pernet->server_sock->sk);
 #else
-	ret = kernel_setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR,
+	ret = kernel_setsockopt(pernet->server_sock, SOL_SOCKET, SO_REUSEADDR,
 				(char *)&opt, sizeof(opt));
 	if (ret) {
 		pr_err("failed to set SO_REUSEADDR sock opt %d\n", ret);
 		goto err_sock;
 	}
 
-	ret = kernel_setsockopt(server_sock, IPPROTO_TCP, TCP_NODELAY,
+	ret = kernel_setsockopt(pernet->server_sock, IPPROTO_TCP, TCP_NODELAY,
 				(char *)&opt, sizeof(opt));
 	if (ret) {
 		pr_err("failed to set TCP_NODELAY sock opt %d\n", ret);
@@ -170,39 +186,75 @@ static int server_init(void)
 	}
 #endif
 
-	INIT_WORK(&server_accept_conn, server_listener);
-	server_sock->sk->sk_data_ready = server_tcp_listen_data_ready;
+	INIT_WORK(&pernet->server_accept_conn, server_listener);
+	pernet->server_sock->sk->sk_user_data = pernet;
+	pernet->server_sock->sk->sk_data_ready = server_tcp_listen_data_ready;
 
-	pr_info("server is listening on %s:%s\n", host, port);
+	pr_info("server is listening on %s:%s in %u net ns\n", host, port,
+		net->ns.inum);
 	return 0;
 
 err_sock:
-	sock_release(server_sock);
-	server_sock = NULL;
+	sock_release(pernet->server_sock);
+	pernet->server_sock = NULL;
 err_port:
 	return ret;
 }
 
-static int __init simple_webserver_lkm_init(void)
+static int netns_subsys_setup(struct net *net)
 {
 	int ret;
-	pr_info("adding simple web server LKM\n");
+	struct pernet_server_net *pernet;
 
-	ret = server_init();
+	pernet = net_generic(net, netns_subsys_id);
+
+	ret = server_init(net);
 	if (ret < 0)
 		pr_err("failed to init module, aborting\n");
 
 	return ret;
 }
 
+void netns_subsys_destroy(struct net *net)
+{
+	struct pernet_server_net *pernet;
+
+	pernet = net_generic(net, netns_subsys_id);
+
+	if (pernet->server_sock)
+		sock_release(pernet->server_sock);
+
+	if (pernet->server_accept_conn.func) {
+		flush_work(&pernet->server_accept_conn);
+		cancel_work_sync(&pernet->server_accept_conn);
+	}
+
+	pr_info("server stops listening on %s:%s in %u net ns\n", host, port,
+		net->ns.inum);
+}
+
+static struct pernet_operations netns_subsys_ops = {
+	.init = netns_subsys_setup,
+	.exit = netns_subsys_destroy,
+	.id = &netns_subsys_id,
+	.size = sizeof(struct pernet_server_net),
+};
+
+static int __init simple_webserver_lkm_init(void)
+{
+	int ret;
+	pr_info("adding simple web server LKM\n");
+
+	ret = register_pernet_subsys(&netns_subsys_ops);
+	if (ret < 0)
+		pr_err("failed to init pernet subsystem, aborting\n");
+
+	return ret;
+}
+
 static void __exit simple_webserver_lkm_exit(void)
 {
-	if (server_sock)
-		sock_release(server_sock);
-	if (server_accept_conn.func) {
-		flush_work(&server_accept_conn);
-		cancel_work_sync(&server_accept_conn);
-	}
+	unregister_pernet_subsys(&netns_subsys_ops);
 	pr_info("simple web server LKM removed\n");
 }
 
