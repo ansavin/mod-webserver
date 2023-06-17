@@ -3,6 +3,7 @@
 #include <linux/module.h>
 #include <linux/inet.h>
 #include <linux/version.h>
+#include <linux/moduleparam.h>
 
 #include <net/tcp.h>
 #include <net/sock.h>
@@ -14,11 +15,18 @@ MODULE_VERSION("1.0");
 
 static struct work_struct server_accept_conn;
 static struct socket *server_sock;
+static char *port = "2000";
+static char *host = "0.0.0.0";
 
 struct client_work_queue {
 	struct work_struct client_work;
 	struct socket *client_sock;
 };
+
+module_param(port, charp, 0);
+MODULE_PARM_DESC(port, "Webserver port");
+module_param(host, charp, 0);
+MODULE_PARM_DESC(host, "Webserver host");
 
 static void client_handler(struct work_struct *w)
 {
@@ -113,8 +121,6 @@ static int server_init(void)
 	int ret;
 	struct sockaddr_storage server_addr;
 	__kernel_sa_family_t af = AF_INET;
-	char *port = "2000";
-	char *host = "0.0.0.0";
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0))
 	int opt = 1;

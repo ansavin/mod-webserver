@@ -12,7 +12,7 @@ Server listens to TCP port 2000 on all interfaces (currently this is hardcoded)
 make KSRC=/lib/modules/$(uname -r)/build
 
 # load module
-insmod mod-webserver.ko
+insmod mod-webserver.ko [host=127.0.0.1] [port=3000]
 
 # unload module
 rmmod mod-webserver.ko
