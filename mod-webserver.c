@@ -60,10 +60,17 @@ static void client_handler(struct work_struct *w)
 	int ret;
 	struct page *page;
 	struct client_work_queue *queue;
-	char *msg = "HTTP/1.1 200 OK\n\nPONG\n";
-	int flags = 0;
-	int left = strlen(msg);
+	char *message = "HTTP/1.1 200 OK\n\nPONG\n";
+	int left = strlen(message);
 	int offset = 0;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0))
+	struct bio_vec bvec;
+	struct msghdr msg = {
+		.msg_flags = MSG_SPLICE_PAGES,
+	};
+#else
+	int flags = 0;
+#endif
 
 	pr_info("accepted incoming connection\n");
 
@@ -79,7 +86,7 @@ static void client_handler(struct work_struct *w)
 		goto err;
 	}
 
-	memcpy((u64 *)addr, msg, strlen(msg));
+	memcpy((u64 *)addr, message, strlen(message));
 
 	page = virt_to_page(addr);
 	if (!page) {
@@ -87,7 +94,13 @@ static void client_handler(struct work_struct *w)
 		goto err_page;
 	}
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0))
+	bvec_set_page(&bvec, page, left, offset);
+	iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, &bvec, 1, left);
+	ret = sock_sendmsg(queue->client_sock, &msg);
+#else
 	ret = kernel_sendpage(queue->client_sock, page, offset, left, flags);
+#endif
 	if (ret < 0)
 		pr_err("can't send page to client: %d\n", ret);
 
