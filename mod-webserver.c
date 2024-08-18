@@ -50,6 +50,10 @@ MODULE_PARM_DESC(port, "Webserver port");
 module_param(host, charp, 0);
 MODULE_PARM_DESC(host, "Webserver host");
 
+void server_stop(struct pernet_server_net *pernet);
+struct server_data *pernet_data_alloc(struct net *net);
+void netns_subsys_destroy(struct net *net);
+
 static void client_handler(struct work_struct *w)
 {
 	u64 addr;
