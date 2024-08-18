@@ -49,9 +49,9 @@ dkms remove mod-webserver/1.0 --all
 ### Using module
 
 After loading module creates path in `/sys/kernel` only.
-To start a webserver in current net ns, you need to write `1` in `/sys/kernel/webserver/status` path.
-To start a webserver in new/exitsting net ns, you should enter this ns, mount sysfs and write `1` in `/sys/kernel/webserver/status`.
-To disable webserver in current net ns, you need to write `0` in `/sys/kernel/webserver/status` path.
+To start a webserver in current net ns, you need to write `1` in `/sys/kernel/webserver/net/data/status` path.
+To start a webserver in new/exitsting net ns, you should enter this ns, mount sysfs and write `1` in `/sys/kernel/webserver/net/data/status`.
+To disable webserver in current net ns, you need to write `0` in `/sys/kernel/webserver/net/data/status` path.
 Disabling webserver in one ns shouldn't somehow affect webservers in other net namespaces.
 Disabling webserver shouldn't affect sysfs and especially `/sys/kernel/webserver` created by module.
 By entering new net ns (`unshare -t net sh`) and mounting sysfs (`mount -t sysfs sysfs /mnt`) you can run multiple instances of webserver on a single host
